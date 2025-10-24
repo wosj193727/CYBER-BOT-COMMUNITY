@@ -1,9 +1,9 @@
-name: Auto Close Config PRs
+name: Auto Close Sensitive PRs
 
 on:
   pull_request:
     types: [opened, edited, synchronize]
-  workflow_dispatch:  # 👈 manual trigger for existing PRs
+  workflow_dispatch:  # 👈 manually trigger for existing PRs
 
 permissions:
   pull-requests: write
@@ -13,37 +13,48 @@ jobs:
   auto-close:
     runs-on: ubuntu-latest
     steps:
-      - name: Close PRs containing 'Update config.json'
+      - name: Scan and close sensitive PRs
         uses: actions/github-script@v7
         with:
           script: |
-            const keyword = "update config.json";
+            const keywords = [
+              { key: "update config.json", msg: "💡 **Dear user**, Don't share your private config info to us. Thanks ❤️‍🩹" },
+              { key: "update appstate.json", msg: "⚠️ **Dear user**, Please don’t share your **Facebook appstate.json** file — it contains sensitive cookies & IDs. Stay safe ❤️‍🔥" }
+            ];
 
-            // If triggered by pull_request event
+            async function handlePR(pr) {
+              const text = (pr.title + " " + (pr.body || "")).toLowerCase();
+
+              for (const { key, msg } of keywords) {
+                if (text.includes(key)) {
+                  const prNumber = pr.number;
+
+                  await github.rest.issues.createComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: prNumber,
+                    body: msg
+                  });
+
+                  await github.rest.pulls.update({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    pull_number: prNumber,
+                    state: "closed"
+                  });
+
+                  console.log(`🚫 Closed PR #${prNumber} due to '${key}'.`);
+                  return true;
+                }
+              }
+              return false;
+            }
+
             if (context.eventName === "pull_request") {
               const pr = context.payload.pull_request;
-              const text = (pr.title + " " + (pr.body || "")).toLowerCase();
-              if (text.includes(keyword)) {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: pr.number,
-                  body: "💡 **Dear user**, Don't share your private config info to us. Thanks ❤️‍🩹"
-                });
-                await github.rest.pulls.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: pr.number,
-                  state: "closed"
-                });
-                console.log(`🚫 Closed PR #${pr.number} due to 'Update config.json'.`);
-              } else {
-                console.log("✅ No restricted keywords found in PR event.");
-              }
-            } 
-            // If manually triggered (workflow_dispatch)
-            else if (context.eventName === "workflow_dispatch") {
-              console.log("🔍 Scanning all open PRs for 'update config.json'...");
+              await handlePR(pr);
+            } else if (context.eventName === "workflow_dispatch") {
+              console.log("🔍 Scanning all open PRs...");
               const { data: pulls } = await github.rest.pulls.list({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -51,22 +62,7 @@ jobs:
               });
 
               for (const pr of pulls) {
-                const text = (pr.title + " " + (pr.body || "")).toLowerCase();
-                if (text.includes(keyword)) {
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: pr.number,
-                    body: "💡 **Dear user**, Don't share your private config info to us. Thanks ❤️‍🩹"
-                  });
-                  await github.rest.pulls.update({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    pull_number: pr.number,
-                    state: "closed"
-                  });
-                  console.log(`🚫 Closed existing PR #${pr.number}.`);
-                }
+                await handlePR(pr);
               }
               console.log("✅ Scan complete.");
             }
