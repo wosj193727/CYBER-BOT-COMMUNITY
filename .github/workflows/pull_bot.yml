@@ -3,11 +3,12 @@ name: Auto Close Sensitive PRs
 on:
   pull_request:
     types: [opened, edited, synchronize]
-  workflow_dispatch:  # 👈 manually trigger for existing PRs
+  workflow_dispatch:
 
 permissions:
   pull-requests: write
   issues: write
+  contents: read
 
 jobs:
   auto-close:
@@ -18,51 +19,76 @@ jobs:
         with:
           script: |
             const keywords = [
-              { key: "update config.json", msg: "💡 **Dear user**, Don't share your private config info to us. Thanks ❤️‍🩹" },
-              { key: "update appstate.json", msg: "⚠️ **Dear user**, Please don’t share your **Facebook appstate.json** file — it contains sensitive cookies & IDs. Stay safe ❤️‍🔥" }
+              { key: "config.json", msg: "💡 **Dear user**, Don't share your private config info to us. Thanks ❤️‍🩹" },
+              { key: "appstate.json", msg: "⚠️ **Dear user**, Please don’t share your **Facebook appstate.json** file — it contains sensitive cookies & IDs. Stay safe ❤️‍🔥" }
             ];
 
             async function handlePR(pr) {
               const text = (pr.title + " " + (pr.body || "")).toLowerCase();
+              let sensitive = null;
 
+              // check for keywords in title/body
               for (const { key, msg } of keywords) {
                 if (text.includes(key)) {
-                  const prNumber = pr.number;
-
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: prNumber,
-                    body: msg
-                  });
-
-                  await github.rest.pulls.update({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    pull_number: prNumber,
-                    state: "closed"
-                  });
-
-                  console.log(`🚫 Closed PR #${prNumber} due to '${key}'.`);
-                  return true;
+                  sensitive = { key, msg };
+                  break;
                 }
+              }
+
+              // check for keywords in file changes
+              if (!sensitive) {
+                const files = await github.rest.pulls.listFiles({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number
+                });
+                for (const file of files.data) {
+                  for (const { key, msg } of keywords) {
+                    if (file.filename.toLowerCase().includes(key)) {
+                      sensitive = { key, msg };
+                      break;
+                    }
+                  }
+                  if (sensitive) break;
+                }
+              }
+
+              if (sensitive) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body: sensitive.msg
+                });
+                await github.rest.pulls.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: pr.number,
+                  state: "closed"
+                });
+                console.log(`🚫 Closed PR #${pr.number} due to '${sensitive.key}'.`);
+                return true;
               }
               return false;
             }
 
+            // handle PR events
             if (context.eventName === "pull_request") {
               const pr = context.payload.pull_request;
               await handlePR(pr);
-            } else if (context.eventName === "workflow_dispatch") {
-              console.log("🔍 Scanning all open PRs...");
+            }
+            // optional manual trigger
+            else if (context.eventName === "workflow_dispatch") {
+              console.log("🔍 Manually scanning all open PRs...");
               const { data: pulls } = await github.rest.pulls.list({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                state: "open"
+                state: "open",
+                per_page: 100
               });
 
               for (const pr of pulls) {
                 await handlePR(pr);
               }
-              console.log("✅ Scan complete.");
+              console.log("✅ Manual scan complete.");
             }
